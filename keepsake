@@ -743,6 +743,42 @@ resolve_snapshot() {
 # Commands
 # ---------------------------------------------------------------------------
 
+# A pre-rename ~/.local/bin/distrohop symlinked straight at $SCRIPT_DIR/distrohop
+# (the old script file). That path no longer exists after the rename, so the
+# symlink went dangling and any distrohop-backup.timer still enabled from
+# before started failing to even launch — silently, since nothing runs to
+# report it. Swap the units for the current ones so `keepsake install`
+# (already the documented upgrade step) finishes the migration in one go
+# instead of leaving a separate manual systemd step to forget.
+migrate_systemd_units() {
+  local sd="$HOME/.config/systemd/user"
+  [[ -d $sd ]] || return 0
+  [[ -f $sd/distrohop-backup.timer || -f $sd/distrohop-backup.service ]] || return 0
+  [[ -f $sd/keepsake-backup.timer ]] && return 0
+  [[ -f $SCRIPT_DIR/systemd/keepsake-backup.timer && -f $SCRIPT_DIR/systemd/keepsake-backup.service ]] || return 0
+
+  local was_enabled=0
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user is-enabled distrohop-backup.timer >/dev/null 2>&1 && was_enabled=1
+    systemctl --user disable --now distrohop-backup.timer >/dev/null 2>&1 || true
+  fi
+  rm -f "$sd/distrohop-backup.timer" "$sd/distrohop-backup.service"
+  cp "$SCRIPT_DIR/systemd/keepsake-backup.timer" "$SCRIPT_DIR/systemd/keepsake-backup.service" "$sd/"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload 2>/dev/null || true
+    if (( was_enabled )); then
+      if systemctl --user enable --now keepsake-backup.timer 2>/dev/null; then
+        info "migrated the systemd timer: distrohop-backup → keepsake-backup"
+      else
+        warn "moved systemd units to keepsake-backup, but couldn't enable the timer — run: systemctl --user enable --now keepsake-backup.timer"
+      fi
+      return 0
+    fi
+  fi
+  info "moved systemd units: distrohop-backup → keepsake-backup (was not enabled — enable with: systemctl --user enable --now keepsake-backup.timer)"
+}
+
 cmd_install() {
   local dest="$HOME/.local/bin/keepsake"
   mkdir -p "$HOME/.local/bin"
@@ -754,6 +790,7 @@ cmd_install() {
   if [[ :$PATH: != *":$HOME/.local/bin:"* ]]; then
     warn "$HOME/.local/bin is not on PATH — add it, or open a new terminal"
   fi
+  migrate_systemd_units
 }
 
 cmd_config() {

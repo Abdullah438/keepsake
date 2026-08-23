@@ -109,6 +109,33 @@ assert "[[ -L $H/.local/bin/keepsake ]]" "install created ~/.local/bin/keepsake"
 assert "[[ -L $H/.local/bin/distrohop ]]" "install left distrohop as an alias"
 
 # ---------------------------------------------------------------------------
+it "install swaps a leftover distrohop-backup systemd timer for keepsake-backup (regression)"
+# ---------------------------------------------------------------------------
+# A pre-rename install left distrohop-backup.timer pointed at
+# ~/.local/bin/distrohop, which used to symlink straight at the old script
+# file. After the rename that file is gone, so the timer silently stopped
+# being able to run at all — install should finish the migration, not just
+# the README.
+HSD=$(new_home hsysd)
+mkdir -p "$HSD/.config/systemd/user"
+printf '[Timer]\nUnit=distrohop-backup.service\n' > "$HSD/.config/systemd/user/distrohop-backup.timer"
+printf '[Service]\nExecStart=%%h/.local/bin/distrohop backup\n' > "$HSD/.config/systemd/user/distrohop-backup.service"
+run "$HSD" install >/dev/null 2>&1
+assert_no "$HSD/.config/systemd/user/distrohop-backup.timer"
+assert_no "$HSD/.config/systemd/user/distrohop-backup.service"
+assert_file "$HSD/.config/systemd/user/keepsake-backup.timer"
+assert_file "$HSD/.config/systemd/user/keepsake-backup.service"
+assert "grep -q keepsake-backup.service $HSD/.config/systemd/user/keepsake-backup.timer" "migrated timer points at keepsake-backup.service"
+
+# ---------------------------------------------------------------------------
+it "install leaves systemd alone when there was never a distrohop timer"
+# ---------------------------------------------------------------------------
+HSD2=$(new_home hsysd2)
+mkdir -p "$HSD2/.config/systemd/user"
+run "$HSD2" install >/dev/null 2>&1
+assert_no "$HSD2/.config/systemd/user/keepsake-backup.timer"
+
+# ---------------------------------------------------------------------------
 it "edit opens the manifest in micro even when EDITOR is set"
 # ---------------------------------------------------------------------------
 EDITBIN="$SANDBOX/editbin"

@@ -227,7 +227,7 @@ KEEPSAKE_DIR=/tmp/keepsake-test ./keepsake backup --name smoke --dest /tmp/keeps
 
 Same tool, new name. `install` also leaves `distrohop` as a symlink to `keepsake`, so existing scripts keep working. On first run, `~/.config/distrohop` and `~/Backups/distrohop` are renamed to `keepsake` if the new paths do not already exist. An existing R2 bucket named `distrohop` still works — `s3 configure` keeps the bucket already in `s3.conf`, or set `bucket=distrohop` yourself. Older pushes that nested a `distrohop/` prefix inside the bucket are still found on pull.
 
-The systemd unit is now `keepsake-backup.timer`. If you had `distrohop-backup.timer` enabled, disable it and install the new one from `systemd/` (see [Scheduled backups](#scheduled-backups-systemd)).
+The systemd unit is now `keepsake-backup.timer`. If you had `distrohop-backup.timer` enabled, running `./keepsake install` swaps it for the new one automatically (disables and removes the old unit, installs and enables `keepsake-backup.timer`) — no separate step needed.
 
 ## License
 
