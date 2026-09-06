@@ -60,6 +60,8 @@ cd ~/Dev/keepsake
 
 That symlinks `~/.local/bin/keepsake` and writes `~/.config/keepsake/manifest.conf`. Make sure `~/.local/bin` is on your `PATH`.
 
+Manifest lines are paths relative to `$HOME`, or absolute (`/etc/...`). Absolute paths are stored under `system/` in the snapshot and restored in place (sudo if needed) — they never land under `$HOME`. After any `/etc/udev/hwdb.d/` file, restore runs `systemd-hwdb update` and `udevadm trigger`.
+
 By default your dev tree is expected at `~/Dev`. If it lives somewhere else, set it once:
 
 ```bash
@@ -78,6 +80,8 @@ keepsake backup --name workstation --secrets --push  # backup, then upload to S3
 ```
 
 Default groups are `core apps gtk editor packages dev`. Secrets are opt-in (`--secrets`) — nothing sensitive leaves your machine unless you explicitly ask it to. Containers that touch the backed-up docker volumes or data dirs are stopped before the copy and started again right after, so the copies are consistent, not half-written.
+
+Host files listed as absolute paths (for example `/etc/udev/hwdb.d/71-g502-disable.hwdb`) go in `system/` with their full path, not in `files/`. `keepsake status` shows them as `/etc/...` so you can confirm they will be in the snapshot before you run backup.
 
 `--push` uploads the snapshot to S3/R2 right after it's written (same as running `keepsake s3 push NAME` afterward) — see [S3 / Cloudflare R2](#s3--cloudflare-r2) for setup. It does not force `--secrets`; only what you told `backup` to include gets uploaded.
 
@@ -117,6 +121,8 @@ keepsake delete workstation --s3-only
 ## Restore
 
 On a TTY, restore opens a checkbox list of what is in the snapshot. Tick what you want (secrets, package install, and development apps are optional). `--yes` skips the prompt and restores the defaults. `--groups` skips the prompt and restores only what you listed.
+
+Absolute `/etc` paths restore to their original locations. Writing them may prompt for sudo. If the snapshot includes a udev hwdb rule, restore rebuilds the binary hwdb afterward so the rule is live without a reboot. You need keepsake 1.4.1+ for that path — an older `install` will copy those files into `$HOME/etc/...` by mistake.
 
 ```bash
 keepsake install

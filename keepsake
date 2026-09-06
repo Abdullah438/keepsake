@@ -2,7 +2,7 @@
 # keepsake — snapshot configs, packages, and dev-environment state, then put them back.
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 SOURCE=${BASH_SOURCE[0]}
 while [[ -L $SOURCE ]]; do
@@ -119,6 +119,7 @@ ${C_BOLD}BACKUP GROUPS${C_RESET}  (default: ${DEFAULT_GROUPS[*]})
   dev          ~/Dev clone map (GitHub remotes + folder tree), .env files, docker volumes
   secrets      ssh private keys, gh hosts, rclone.conf  ${C_DIM}(opt-in)${C_RESET}
   extra        whatever you add under [extra] in the manifest
+                 Absolute paths (/etc/...) go in system/ and restore in place.
 
 ${C_BOLD}SETTINGS${C_RESET}  (keepsake config get|set KEY VALUE)
   dev_root     where your dev tree lives (default: ~/Dev, or \$KEEPSAKE_DEV for a one-off override)
@@ -341,6 +342,121 @@ item_exists() {
   [[ -e $p || -L $p ]]
 }
 
+is_abs_path() { [[ $1 == /* ]]; }
+
+# Copy a live file/dir into the snapshot. Absolute manifest paths land under
+# system/ (so restore cannot rsync them into $HOME). Home-relative paths stay
+# under files/ or secrets/.
+copy_system_item() {
+  local abs=$1 snap=$2
+  local src=$abs dest="$snap/system$abs"
+  if ! item_exists "$src"; then
+    warn "skip (missing): $abs"
+    return 1
+  fi
+  if (( DRY_RUN )); then
+    printf '  %s\n' "$abs"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  if [[ -d $src && ! -L $src ]]; then
+    mkdir -p "$dest"
+    rsync -a "${RSYNC_EXCLUDES[@]}" "$src/" "$dest/"
+  else
+    rsync -a "${RSYNC_EXCLUDES[@]}" "$src" "$dest"
+  fi
+}
+
+# Best-effort write to dest, with sudo when the parent dir is not writable
+# (typical for /etc). Existing dest is saved as *.pre-hop.TIMESTAMP first.
+install_path() {
+  local src=$1 dest=$2
+  local dest_dir bak
+  dest_dir=$(dirname "$dest")
+
+  if [[ -e $dest || -L $dest ]]; then
+    bak="${dest}.pre-hop.$(date +%Y%m%d%H%M%S)"
+    if [[ -w $dest_dir ]]; then
+      if [[ -d $dest && ! -L $dest ]]; then
+        mkdir -p "$bak"
+        rsync -a "$dest/" "$bak/"
+      else
+        cp -a "$dest" "$bak"
+      fi
+    elif command -v sudo >/dev/null 2>&1; then
+      if [[ -d $dest && ! -L $dest ]]; then
+        sudo mkdir -p "$bak"
+        sudo rsync -a "$dest/" "$bak/"
+      else
+        sudo cp -a "$dest" "$bak"
+      fi
+    else
+      warn "cannot backup $dest before overwrite"
+      return 1
+    fi
+  fi
+
+  if mkdir -p "$dest_dir" 2>/dev/null && [[ -w $dest_dir ]]; then
+    if [[ -d $src && ! -L $src ]]; then
+      mkdir -p "$dest"
+      rsync -a "$src/" "$dest/"
+    else
+      rsync -a "$src" "$dest"
+    fi
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo mkdir -p "$dest_dir"
+    if [[ -d $src && ! -L $src ]]; then
+      sudo mkdir -p "$dest"
+      sudo rsync -a "$src/" "$dest/"
+    else
+      sudo rsync -a "$src" "$dest"
+    fi
+  else
+    warn "cannot write $dest — need root"
+    return 1
+  fi
+}
+
+restore_system_item() {
+  local abs=$1 snap=$2
+  local src="$snap/system$abs"
+  if ! item_exists "$src"; then
+    return 1
+  fi
+  if (( DRY_RUN )); then
+    printf '  %s → %s\n' "$abs" "$abs"
+    return 0
+  fi
+  install_path "$src" "$abs"
+}
+
+# After restoring /etc/udev/hwdb.d/* , rebuild the binary hwdb so the rule
+# is live without a reboot.
+apply_hwdb_if_needed() {
+  local snap=$1 g rel
+  [[ -f $snap/MANIFEST.txt ]] || return 0
+  while IFS=$'\t' read -r g rel; do
+    [[ $rel == /etc/udev/hwdb.d/* ]] || continue
+    restore_wanted "$g" || continue
+    if command -v systemd-hwdb >/dev/null 2>&1; then
+      systemd-hwdb update 2>/dev/null \
+        || sudo systemd-hwdb update \
+        || warn "systemd-hwdb update failed"
+    elif command -v udevadm >/dev/null 2>&1; then
+      udevadm hwdb --update 2>/dev/null \
+        || sudo udevadm hwdb --update \
+        || warn "udevadm hwdb --update failed"
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm trigger --subsystem-match=input 2>/dev/null \
+        || sudo udevadm trigger --subsystem-match=input 2>/dev/null \
+        || true
+    fi
+    info "rebuilt hwdb so $rel is live"
+    return 0
+  done < "$snap/MANIFEST.txt"
+}
+
 # shellcheck disable=SC2088  # "~/..." here is display text, not a path
 copy_item() {
   local rel=$1 dest_root=$2
@@ -538,6 +654,9 @@ Notes
 - Development apps (Cursor, Docker, nvm, …) are listed in packages/dev-apps.txt.
   Tick dev-apps in the restore picker to try automated install; leftover
   manual steps are printed at the end.
+- Absolute manifest paths (e.g. /etc/udev/hwdb.d/…) restore in place, not
+  under \$HOME. Writing /etc may prompt for sudo. After hwdb rules,
+  keepsake runs systemd-hwdb update and udevadm trigger.
 
 Restore asks what to put back (checkboxes). Skip the prompt with --yes.
 
@@ -663,7 +782,11 @@ cmd_clean() {
   local -a found=()
   local rel root f
   while IFS= read -r rel; do
-    root="$HOME/$rel"
+    if is_abs_path "$rel"; then
+      root=$rel
+    else
+      root="$HOME/$rel"
+    fi
     while IFS= read -r -d '' f; do
       found+=("$f")
     done < <(find "$(dirname "$root")" -maxdepth 1 -name "$(basename "$root").pre-hop.*" \
@@ -844,16 +967,23 @@ cmd_status() {
     local shown=0
     while IFS= read -r rel; do
       [[ -z $rel ]] && continue
-      src="$HOME/$rel"
+      local src label
+      if is_abs_path "$rel"; then
+        src=$rel
+        label=$rel
+      else
+        src="$HOME/$rel"
+        label="~/$rel"
+      fi
       if item_exists "$src"; then
         ((shown)) || { printf '%s[%s]%s\n' "$C_BOLD" "$g" "$C_RESET"; shown=1; }
         local sz
         sz=$(du -sh "$src" 2>/dev/null | cut -f1)
-        printf '  %-42s %s\n' "~/$rel" "$sz"
+        printf '  %-42s %s\n' "$label" "$sz"
         count=$((count + 1))
       else
         ((shown)) || { printf '%s[%s]%s\n' "$C_BOLD" "$g" "$C_RESET"; shown=1; }
-        printf '  %s%-42s missing%s\n' "$C_DIM" "~/$rel" "$C_RESET"
+        printf '  %s%-42s missing%s\n' "$C_DIM" "$label" "$C_RESET"
         missing=$((missing + 1))
       fi
     done < <(parse_manifest "$g")
@@ -920,7 +1050,12 @@ cmd_backup() {
     [[ $g == secrets ]] && continue
     while IFS= read -r rel; do
       [[ -z $rel ]] && continue
-      if copy_item "$rel" "$dest/files"; then
+      if is_abs_path "$rel"; then
+        if copy_system_item "$rel" "$dest"; then
+          printf '%s\t%s\n' "$g" "$rel" >> "$dest/MANIFEST.txt"
+          copied=$((copied + 1))
+        fi
+      elif copy_item "$rel" "$dest/files"; then
         printf '%s\t%s\n' "$g" "$rel" >> "$dest/MANIFEST.txt"
         copied=$((copied + 1))
       fi
@@ -931,7 +1066,12 @@ cmd_backup() {
     mkdir -p "$dest/secrets"
     while IFS= read -r rel; do
       [[ -z $rel ]] && continue
-      if copy_item "$rel" "$dest/secrets"; then
+      if is_abs_path "$rel"; then
+        if copy_system_item "$rel" "$dest"; then
+          printf '%s\t%s\n' "secrets" "$rel" >> "$dest/MANIFEST.txt"
+          copied=$((copied + 1))
+        fi
+      elif copy_item "$rel" "$dest/secrets"; then
         printf '%s\t%s\n' "secrets" "$rel" >> "$dest/MANIFEST.txt"
         copied=$((copied + 1))
       fi
@@ -1227,6 +1367,7 @@ cmd_restore() {
     while IFS=$'\t' read -r g rel; do
       [[ -z ${rel:-} ]] && continue
       [[ $g == secrets ]] && continue
+      is_abs_path "$rel" && continue
       restore_wanted "$g" || continue
       if restore_item "$rel" "$snap/files"; then
         restored=$((restored + 1))
@@ -1234,10 +1375,25 @@ cmd_restore() {
     done < "$snap/MANIFEST.txt"
   fi
 
+  if [[ -f $snap/MANIFEST.txt ]]; then
+    while IFS=$'\t' read -r g rel; do
+      [[ -z ${rel:-} ]] && continue
+      is_abs_path "$rel" || continue
+      restore_wanted "$g" || continue
+      if restore_system_item "$rel" "$snap"; then
+        restored=$((restored + 1))
+      fi
+    done < "$snap/MANIFEST.txt"
+    if (( ! DRY_RUN )); then
+      apply_hwdb_if_needed "$snap"
+    fi
+  fi
+
   if restore_wanted secrets; then
     if [[ -d $snap/secrets ]]; then
       while IFS=$'\t' read -r g rel; do
         [[ $g == secrets ]] || continue
+        is_abs_path "$rel" && continue
         restore_item "$rel" "$snap/secrets" && restored=$((restored + 1))
       done < "$snap/MANIFEST.txt"
     else

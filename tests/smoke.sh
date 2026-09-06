@@ -320,5 +320,22 @@ assert "[[ -n \$(sed -n '2p' <<< \"\$MINI_LIST\") ]]" "list renders rows, not ju
 assert "grep -q mini <<< \"\$MINI_LIST\"" "list includes the snapshot just taken"
 
 # ---------------------------------------------------------------------------
+it "absolute manifest paths land in system/ and restore in place"
+# ---------------------------------------------------------------------------
+SYS="$SANDBOX/fake-etc/udev/hwdb.d"
+mkdir -p "$SYS"
+printf 'evdev:input:test*\n KEYBOARD_KEY_90004=reserved\n' > "$SYS/71-test.hwdb"
+H5=$(new_home h5)
+run "$H5" status --groups extra >/dev/null 2>&1
+printf '%s/71-test.hwdb\n' "$SYS" >> "$H5/.config/keepsake/manifest.conf"
+run "$H5" backup --name sysabs --groups extra >/dev/null 2>&1
+assert_file "$SANDBOX/snapshots/sysabs/system$SYS/71-test.hwdb"
+assert_no "$SANDBOX/snapshots/sysabs/files${SYS#/}/71-test.hwdb"
+printf 'CHANGED\n' > "$SYS/71-test.hwdb"
+run "$H5" restore sysabs --groups extra --yes >/dev/null 2>&1
+assert "grep -q reserved '$SYS/71-test.hwdb'" "restored absolute path in place"
+assert "compgen -G '$SYS/71-test.hwdb.pre-hop.*' >/dev/null" "clobbered abs path saved as *.pre-hop.*"
+
+# ---------------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
