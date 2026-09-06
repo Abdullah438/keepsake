@@ -95,10 +95,10 @@ ${C_BOLD}USAGE${C_RESET}
   keepsake backup  [--name NAME] [--dest DIR] [--groups LIST] [--with LIST] [--secrets] [--archive] [--push]
   keepsake restore SNAPSHOT [--groups LIST] [--with LIST] [--secrets] [--up] [--yes] [--dry-run] [--pull]
   keepsake clone   [SNAPSHOT] [--gh] [--dry-run]
-  keepsake prune   [--keep N] [--dry-run]
+  keepsake prune   [--keep N] [--local-only|--s3-only] [--dry-run]
   keepsake delete  NAME [--local-only|--s3-only] [--dry-run]   (alias: rm)
   keepsake clean   [--older-than DAYS] [--dry-run]
-  keepsake s3      configure ENVFILE | push [SNAPSHOT] [--secrets] [--no-verify] | pull NAME [--no-verify] | ls | prune [--keep N]
+  keepsake s3      configure ENVFILE | push [SNAPSHOT] [--secrets] [--no-verify] | pull NAME [--no-verify] | ls
   keepsake list    (alias: ls)   — newest first, shows S3 push status if s3 is configured
   keepsake show    SNAPSHOT
   keepsake verify  SNAPSHOT
@@ -134,7 +134,8 @@ ${C_BOLD}EXAMPLES${C_RESET}
   keepsake restore workstation --pull          # download from S3/R2 first
   keepsake restore workstation --up
   keepsake clone workstation --gh
-  keepsake prune --keep 5
+  keepsake prune --keep 10                    # local + S3/R2 when configured
+  keepsake prune --s3-only --keep 10          # remote only
   keepsake delete workstation                  # remove local + remote copy
   keepsake delete workstation --local-only
   keepsake delete workstation --s3-only
@@ -143,7 +144,6 @@ ${C_BOLD}EXAMPLES${C_RESET}
   keepsake s3 push workstation --secrets       # ...and add ssh keys / rclone.conf
   keepsake s3 pull workstation
   keepsake verify workstation                  # checksum a local snapshot
-  keepsake s3 prune --keep 5
   keepsake packages apply --portable
   keepsake bootstrap
   keepsake config set dev_root ~/Projects
@@ -1215,37 +1215,51 @@ cmd_list() {
 }
 
 cmd_prune() {
-  local dir=${DEST_OVERRIDE:-$DATA_DIR}
+  (( WANT_LOCAL_ONLY && WANT_S3_ONLY )) && die "--local-only and --s3-only are mutually exclusive"
+
   local keep=${KEEP_N:-$PRUNE_DEFAULT_KEEP}
   [[ $keep =~ ^[0-9]+$ ]] || die "--keep must be a non-negative integer"
-  if [[ ! -d $dir ]]; then
-    warn "no snapshots yet in $dir"
-    return 0
-  fi
+  local do_local=1 do_s3=1
+  (( WANT_LOCAL_ONLY )) && do_s3=0
+  (( WANT_S3_ONLY )) && do_local=0
 
-  local snaps=() epoch when d
-  while IFS=$'\t' read -r epoch when d; do snaps+=("$d"); done < <(list_snapshot_dirs "$dir")
-  local total=${#snaps[@]}
-  if (( total <= keep )); then
-    info "$total snapshot(s), keeping $keep — nothing to prune"
-    return 0
-  fi
-
-  local drop=$(( total - keep )) i name archive
-  info "$total snapshot(s), keeping $keep newest — pruning $drop"
-  for (( i = 0; i < drop; i++ )); do
-    name=$(basename "${snaps[i]}")
-    if (( DRY_RUN )); then
-      printf '  would delete %s\n' "$name"
-      continue
+  if (( do_local )); then
+    local dir=${DEST_OVERRIDE:-$DATA_DIR}
+    if [[ ! -d $dir ]]; then
+      warn "no snapshots yet in $dir"
+    else
+      local snaps=() epoch when d
+      while IFS=$'\t' read -r epoch when d; do snaps+=("$d"); done < <(list_snapshot_dirs "$dir")
+      local total=${#snaps[@]}
+      if (( total <= keep )); then
+        info "$total snapshot(s), keeping $keep — nothing to prune locally"
+      else
+        local drop=$(( total - keep )) i name archive
+        info "$total snapshot(s), keeping $keep newest — pruning $drop locally"
+        for (( i = 0; i < drop; i++ )); do
+          name=$(basename "${snaps[i]}")
+          if (( DRY_RUN )); then
+            printf '  would delete %s\n' "$name"
+            continue
+          fi
+          rm -rf -- "${snaps[i]}"
+          for archive in "${snaps[i]}.tar.zst" "${snaps[i]}.tar.xz"; do
+            [[ -e $archive ]] && rm -f -- "$archive"
+          done
+          ok "deleted $name"
+        done
+        (( DRY_RUN )) && ok "dry-run finished ($drop would be deleted locally)"
+      fi
     fi
-    rm -rf -- "${snaps[i]}"
-    for archive in "${snaps[i]}.tar.zst" "${snaps[i]}.tar.xz"; do
-      [[ -e $archive ]] && rm -f -- "$archive"
-    done
-    ok "deleted $name"
-  done
-  (( DRY_RUN )) && ok "dry-run finished ($drop would be deleted)"
+  fi
+
+  if (( do_s3 )); then
+    if declare -F s3_prune_remote >/dev/null && declare -F s3_load_conf >/dev/null && s3_load_conf 2>/dev/null; then
+      s3_prune_remote
+    elif (( WANT_S3_ONLY )); then
+      die "no s3 config — can't prune remote copies (keepsake s3 configure ENVFILE)"
+    fi
+  fi
 }
 
 cmd_delete() {

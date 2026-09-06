@@ -101,7 +101,7 @@ keepsake verify workstation
 
 Pass `--no-verify` to `backup` to skip checksumming (and to `s3 push`/`s3 pull` to skip the remote comparison).
 
-Old snapshots pile up — `keepsake prune` deletes everything but the 10 most recent (`--keep N` to change that, `--dry-run` to preview). Both `prune` and `s3 prune` order snapshots by the date recorded inside them, not by name, so a custom `--name` never confuses "oldest".
+Old snapshots pile up — `keepsake prune` deletes everything but the 10 most recent locally **and** on S3/R2 when `s3.conf` is set (`--keep N` to change that, `--local-only` / `--s3-only` to limit one side, `--dry-run` to preview). Snapshots are ordered by the date recorded inside them, not by name, so a custom `--name` never confuses "oldest".
 
 `keepsake list` (alias `ls`) shows every local snapshot, newest first, with its size. If `s3.conf` is set up it also checks the remote (one `rclone` call, 5s timeout) and marks each snapshot `✔ pushed` or `— local only`, so you never have to wonder if last night's backup actually made it off the machine.
 
@@ -149,7 +149,7 @@ Leftover sidecars from past restores (`*.pre-hop.*` next to the files that were 
 
 Uploads the **whole** snapshot — `.env` files, docker volumes, and (with `--secrets`) `secrets/` too. This is the off-machine copy: laptop stolen, disk dead, house burns down — not just a local safety net.
 
-Snapshot **contents are encrypted on this machine before upload** whenever `password=` is set in `s3.conf` (`keepsake s3 configure` generates one for you). It uses `rclone crypt`, so private keys, `.env` files, database dumps and `rclone.conf` never reach the bucket as plaintext. Snapshot and file *names* stay readable on purpose — `s3 ls`, `s3 prune`, `delete` and the `S3` column in `list` all work off names, and scrambling them buys little once the contents are sealed. Leave `password=` empty to upload in the clear; push will warn each time that you are.
+Snapshot **contents are encrypted on this machine before upload** whenever `password=` is set in `s3.conf` (`keepsake s3 configure` generates one for you). It uses `rclone crypt`, so private keys, `.env` files, database dumps and `rclone.conf` never reach the bucket as plaintext. Snapshot and file *names* stay readable on purpose — `s3 ls`, `prune`, `delete` and the `S3` column in `list` all work off names, and scrambling them buys little once the contents are sealed. Leave `password=` empty to upload in the clear; push will warn each time that you are.
 
 > The password lives in `s3.conf` next to the keys, so the offline copy of that file you already need is also the only copy of the encryption key. Lose it and the snapshots in the bucket are unrecoverable. Changing it strands everything already uploaded — set it once, before the first push.
 
@@ -177,7 +177,7 @@ keepsake s3 push                              # take a backup now and upload it
 keepsake s3 push --secrets                    # ...including secrets
 keepsake s3 ls
 keepsake s3 pull workstation
-keepsake s3 prune --keep 5                    # delete all but the 5 newest remote snapshots
+keepsake prune --s3-only --keep 5             # delete all but the 5 newest remote snapshots
 ```
 
 `s3 push` never adds secrets to a snapshot on its own: a snapshot taken without `--secrets` uploads without them unless you ask again at push time. Secrets are opt-in at every step, never implied.

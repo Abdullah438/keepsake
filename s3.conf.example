@@ -18,7 +18,7 @@ region=auto
 # Client-side encryption (rclone crypt). Snapshot *contents* are encrypted
 # before upload — ssh keys, .env files, database dumps and rclone.conf never
 # reach the bucket as plaintext. Snapshot and file names stay readable so
-# `s3 ls`, `s3 prune` and `delete` keep working.
+# `s3 ls`, `prune` and `delete` keep working.
 #
 # Leave empty to upload unencrypted. Changing it strands snapshots already in
 # the bucket, so set it once, then keep this file offline — it is the only

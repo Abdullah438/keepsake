@@ -7,5 +7,5 @@ Wants=network-online.target
 Type=oneshot
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:%h/.local/bin
 ExecStart=/usr/bin/bash -c '%h/.local/bin/keepsake backup --name "$(hostname -s)_$(date +%%Y%%m%%d_%%H%%M%%S)" --secrets --push'
-ExecStartPost=%h/.local/bin/keepsake prune --keep 30
+ExecStartPost=%h/.local/bin/keepsake prune --keep 10
 Nice=10

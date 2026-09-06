@@ -109,7 +109,7 @@ s3_rclone_env() {
   # and rclone.conf never sit in the bucket as plaintext.
   #
   # Names are deliberately left readable (filename_encryption=off,
-  # directory_name_encryption=false, suffix=none): `s3 ls`, `s3 prune`,
+  # directory_name_encryption=false, suffix=none): `s3 ls`, `prune`,
   # `delete` and the S3 column in `list` all work off object names, and
   # scrambling them buys little when the contents are already sealed.
   local obscured
@@ -322,7 +322,7 @@ s3_snapshot_epoch() {
   date -d "$when" +%s 2>/dev/null || printf '0\n'
 }
 
-cmd_s3_prune() {
+s3_prune_remote() {
   local keep=${KEEP_N:-$PRUNE_DEFAULT_KEEP}
   [[ $keep =~ ^[0-9]+$ ]] || die "--keep must be a non-negative integer"
   s3_rclone_env
@@ -373,7 +373,7 @@ cmd_s3() {
     push)      cmd_s3_push "${1:-}" ;;
     pull)      cmd_s3_pull "${1:-}" ;;
     ls|list)   cmd_s3_ls ;;
-    prune)     cmd_s3_prune ;;
-    *) die "usage: keepsake s3 configure|push|pull|ls|prune  [NAME]  [--secrets]" ;;
+    prune)     die "removed — use: keepsake prune --s3-only [--keep N]" ;;
+    *) die "usage: keepsake s3 configure|push|pull|ls  [NAME]  [--secrets]" ;;
   esac
 }
